@@ -172,7 +172,7 @@ static int event_handler(struct nl_msg *msg, void *arg)
 
 			nla_parse_nested(wtb, HWSIM_TM_ATTR_MAX,
 				tb[NL80211_ATTR_TESTDATA], NULL);
-			
+
 			// HWSIM_TM_CMD_FRAME:
 			if (wtb[HWSIM_TM_ATTR_FRAME]) {
 				frame = nla_data(wtb[HWSIM_TM_ATTR_FRAME]);
@@ -187,9 +187,11 @@ static int event_handler(struct nl_msg *msg, void *arg)
 				receive_frame(wiphy, (void*)header, size, (void*)frame, length);
 				break;
 			}
-			// HWSIM_TM_CMD_REGISTER: 
+			// HWSIM_TM_CMD_REGISTER:
 			if (wtb[HWSIM_TM_ATTR_REGISTER]) {
 				data = nla_get_u32(wtb[HWSIM_TM_ATTR_REGISTER]);
+				sleep(1);
+				send_testmode_init(wiphy);
 //				printf("HWSIM_TM_ATTR_REGISTER: %d\n", data);
 			}
 			break;

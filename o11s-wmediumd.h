@@ -35,15 +35,11 @@ struct mac80211_hwsim_tx_rate {
 
 /* This structure is passed from userspace to indicate Tx status */
 struct mac80211_hwsim_tx_header {
-	unsigned long dst_hw;	/* cookie */
-	unsigned long dst_skb;	/* cookie */
-	unsigned long src_hw;	/* cookie */
-	unsigned long src_skb;	/* cookie */
+	unsigned long cookie; /* skb */
 	__u64 group;
 	__u32 flags;
 	__u16 freq;
 	__u8 hw_addr[6]; /* local hw mac address */
-	__u8 ack;
 	__u8 drop;	/* the frame should be dropped */
 	__u8 band;
 	__s8 signal;
