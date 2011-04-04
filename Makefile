@@ -6,7 +6,7 @@ LDFLAGS=-lnl -lnl-genl -L/usr/local/lib
 
 OBJECTS=main.o netlink.o
 
-o11s_wmediumd: $(OBJECTS)
+wmediumd: $(OBJECTS)
 	$(CC) -o $@ $(OBJECTS) $(LDFLAGS)
 
 clean:

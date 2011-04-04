@@ -11,7 +11,8 @@ enum hwsim_testmode_attr {
 	HWSIM_TM_ATTR_PS = 2,
 	HWSIM_TM_ATTR_FRAME = 3,
 	HWSIM_TM_ATTR_STATUS = 4,
-	HWSIM_TM_ATTR_REGISTER = 5,
+	HWSIM_TM_ATTR_WMEDIUM_START = 5,
+	HWSIM_TM_ATTR_WMEDIUM_STOP = 6,
 
 	/* keep last */
 	__HWSIM_TM_ATTR_AFTER_LAST,
@@ -22,7 +23,7 @@ enum hwsim_testmode_cmd {
 	HWSIM_TM_CMD_SET_PS = 0,
 	HWSIM_TM_CMD_GET_PS = 1,
 	HWSIM_TM_CMD_FRAME = 2,
-	HWSIM_TM_CMD_REGISTER = 3,
+	HWSIM_TM_CMD_WMEDIUM = 3,
 };
 
 #define MAC80211_TX_MAX_RATES 5
@@ -31,7 +32,7 @@ struct mac80211_hwsim_tx_rate {
 	__s8 idx;
 	__u8 count;
 	__u8 flags;
-} __attribute__((packed));
+} __packed;
 
 /* This structure is passed from userspace to indicate Tx status */
 struct mac80211_hwsim_tx_header {

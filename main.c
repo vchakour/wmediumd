@@ -9,11 +9,13 @@
  * See README and COPYING for more details.
  */
 
-#include <unistd.h>
-#include <sys/select.h>
 #include <stdlib.h>
 #include <string.h>
-#include "o11s-wmediumd.h"
+#include <signal.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <sys/select.h>
+#include "wmediumd.h"
 #include "nl80211.h"
 #include "netlink.h"
 
@@ -25,6 +27,10 @@ static char *ifname = NULL;
 
 static struct mac80211_hwsim_tx_header status;
 static char data[3000];
+#define KEEP_ALIVE_INTERVAL	10000	// 10 msec
+static int keep_alive_count;
+static struct itimerval time_value = {0, 0}; 
+static struct itimerval time_interval = {0, 0}; 
 
 static void usage(void)
 {
@@ -40,7 +46,16 @@ int register_read_socket(int sock)
 }
 
 
-static int send_testmode_init(uint32_t wiphy)
+static int keep_alive_time(void)
+{
+	if (!keep_alive_count)
+		return 0;
+
+	return KEEP_ALIVE_INTERVAL;
+}
+
+
+static int send_testmode_init(int enable)
 {
         struct nl_msg *msg;
         uint8_t cmd = NL80211_CMD_TESTMODE;
@@ -57,7 +72,7 @@ static int send_testmode_init(uint32_t wiphy)
 	if (pret == NULL)
 		goto nla_put_failure;
 
-	NLA_PUT_U32(msg, NL80211_ATTR_WIPHY, wiphy);
+	NLA_PUT_U32(msg, NL80211_ATTR_WIPHY, 0);
 	{
 		struct nlattr *container = nla_nest_start(msg,
 				NL80211_ATTR_TESTDATA);
@@ -65,11 +80,14 @@ static int send_testmode_init(uint32_t wiphy)
 		if (!container)
 			return -ENOBUFS;
 
-		NLA_PUT_U32(msg, HWSIM_TM_ATTR_CMD, HWSIM_TM_CMD_REGISTER);
-		NLA_PUT_U32(msg, HWSIM_TM_ATTR_REGISTER, 1);
+		NLA_PUT_U32(msg, HWSIM_TM_ATTR_CMD, HWSIM_TM_CMD_WMEDIUM);
+		NLA_PUT_FLAG(msg, (enable) ?  HWSIM_TM_ATTR_WMEDIUM_START :
+							HWSIM_TM_ATTR_WMEDIUM_STOP);
 		nla_nest_end(msg, container);
 	}
 
+	keep_alive_count++;
+	
         ret = send_and_recv_msgs(msg, NULL, NULL);
 	if (ret)
 		printf("send failed: %d (%s)\n", ret, strerror(-ret));
@@ -78,6 +96,12 @@ static int send_testmode_init(uint32_t wiphy)
 
  nla_put_failure:
         return -ENOBUFS;
+}
+
+
+static void keep_alive(int sig)
+{
+	send_testmode_init(1);
 }
 
 
@@ -118,7 +142,6 @@ static int send_frame(uint32_t wiphy, void *header, uint32_t size, void *frame, 
 	}
 
 	ret = send_and_recv_msgs(msg, NULL, NULL);
-
 	if (ret)
 		printf("send frame failed: %d (%s)\n", ret, strerror(-ret));
 
@@ -135,8 +158,8 @@ static int receive_frame(uint32_t wiphy, void *header, uint32_t size, void *fram
         int ret;
 
         if (NULL == header || size < sizeof(struct mac80211_hwsim_tx_header)) {
-                printf("frame header missing /small: %p %d\n", header, size);
-                return send_testmode_init(1);
+               printf("frame header missing /small: %p %d\n", header, size);
+		return -ENOBUFS;
         }
 
         memcpy(&status, header, size);
@@ -152,7 +175,8 @@ static int event_handler(struct nl_msg *msg, void *arg)
 	struct nlattr *tb[NL80211_ATTR_MAX + 1];
 	struct nlattr *wtb[HWSIM_TM_ATTR_MAX + 1];
 	int cmd = gnlh->cmd, attr;
-	uint32_t size = 0, length = 0, wiphy = 0, data = 0;
+	uint32_t size = 0, length = 0, wiphy = 0;
+	int flag = 0, err, timeout;
 	void *frame = NULL, *header = NULL;
 
         nla_parse(tb, NL80211_ATTR_MAX, genlmsg_attrdata(gnlh, 0),
@@ -160,46 +184,50 @@ static int event_handler(struct nl_msg *msg, void *arg)
 
 	switch (gnlh->cmd) {
 		case NL80211_CMD_TESTMODE:
-//			printf("NL80211_CMD_TESTMODE:\n");
 
 			if (tb[NL80211_ATTR_WIPHY]) {
 				wiphy = nla_get_u32(tb[NL80211_ATTR_WIPHY]);
-//				printf("NL80211_ATTR_WIPHY: %d \n", data);
 			}
 			if (!tb[NL80211_ATTR_TESTDATA])
 				break;
-//			printf("NL80211_ATTR_TESTDATA: \n");
 
 			nla_parse_nested(wtb, HWSIM_TM_ATTR_MAX,
 				tb[NL80211_ATTR_TESTDATA], NULL);
 
-			// HWSIM_TM_CMD_FRAME:
 			if (wtb[HWSIM_TM_ATTR_FRAME]) {
 				frame = nla_data(wtb[HWSIM_TM_ATTR_FRAME]);
 				length = nla_len(wtb[HWSIM_TM_ATTR_FRAME]);
-//				printf("HWSIM_TM_ATTR_FRAME: len=%d\n", length);
 			}
-			// HWSIM_TM_CMD_FRAME:
 			if (wtb[HWSIM_TM_ATTR_STATUS]) {
 				header = nla_data(wtb[HWSIM_TM_ATTR_STATUS]);
 				size = nla_len(wtb[HWSIM_TM_ATTR_STATUS]);
-//				printf("HWSIM_TM_ATTR_STATUS: len=%d\n", size);
-				receive_frame(wiphy, (void*)header, size, (void*)frame, length);
+				time_value.it_value.tv_usec = 0;
+				keep_alive_count = 0;
+				err = receive_frame(wiphy, (void*)header, size, (void*)frame, length);
+				if (err)
+					send_testmode_init(1);
 				break;
 			}
-			// HWSIM_TM_CMD_REGISTER:
-			if (wtb[HWSIM_TM_ATTR_REGISTER]) {
-				data = nla_get_u32(wtb[HWSIM_TM_ATTR_REGISTER]);
-				sleep(1);
-				send_testmode_init(wiphy);
-//				printf("HWSIM_TM_ATTR_REGISTER: %d\n", data);
+			if (wtb[HWSIM_TM_ATTR_WMEDIUM_START]) {
+				timeout = keep_alive_time();
+				if (timeout) {
+					time_value.it_value.tv_usec = timeout;
+					setitimer(ITIMER_REAL, &time_value, &time_interval);
+				} else 
+					send_testmode_init(1);
+				break;
 			}
-			break;
+
+			if (wtb[HWSIM_TM_ATTR_WMEDIUM_STOP]) {
+				send_testmode_init(0);
+				break;
+			}
 
 		default:
 			printf("Ignored gnlh->cmd: %d, %x\n", gnlh->cmd, gnlh->cmd);
 			break;
-		}
+	}
+
 	return NL_SKIP;
 }
 
@@ -208,16 +236,12 @@ int wait_on_sockets()
 {
 	int retval;
 	int s1, s2;
+
 	while (1) {
-		// s1 = nl_socket_get_fd(nlcfg.nl_sock_event);
 		s2 = nl_socket_get_fd(nlcfg.nl_sock);
 		max_fds = ( s1 > s2 ) ? s1 + 1 : s2 + 1;
-		// FD_SET(s1, &rd_sock_set);
 		FD_SET(s2, &rd_sock_set);
 		retval = select(max_fds, &rd_sock_set, &wr_sock_set, NULL, NULL);
-		//if (FD_ISSET(s1, &rd_sock_set)) {
-        	//	nl_recvmsgs_default(nlcfg.nl_sock_event);
-		//}
 		if (FD_ISSET(s2, &rd_sock_set))
         		nl_recvmsgs_default(nlcfg.nl_sock);
 	}
@@ -228,28 +252,11 @@ int main(int argc, char *argv[])
 {
 	int c;
 	int exitcode = 0;
+	signal (SIGALRM, keep_alive);
 
 	FD_ZERO(&rd_sock_set);
 	FD_ZERO(&wr_sock_set);
 	max_fds = 0;
-
-	for (;;) {
-		c = getopt(argc, argv, "Bi:s:");
-		if (c < 0)
-			break;
-		switch (c) {
-		case 'B':
-			/* TODO: background operation */
-			break;
-		case 'i':
-			break;
-		case 's':
-			break;
-		default:
-			usage();
-			goto out;
-		}
-	}
 
 	if (netlink_init(event_handler)) {
 		exitcode = -ESOCKTNOSUPPORT;
@@ -257,8 +264,11 @@ int main(int argc, char *argv[])
 	}
 
 	printf("\nWmediumd started successfully\n");
-	send_testmode_init(0);
+	send_testmode_init(1);
 	wait_on_sockets();
+
+	printf("\nWmediumd stopped\n");
+	send_testmode_init(0);
 
 out:
 	if (exitcode)
